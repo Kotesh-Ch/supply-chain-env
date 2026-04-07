@@ -1,0 +1,92 @@
+openenv: "1.0"
+
+id: supply-chain-disruption-manager
+name: "Supply Chain Disruption Manager"
+version: "1.0.0"
+description: >
+  A real-world reinforcement learning environment where an AI agent manages
+  a multi-node supply chain. The agent must handle supplier disruptions,
+  route shipments, manage inventory levels, and minimize costs and stockouts
+  across a network of warehouses and suppliers.
+
+author: "Challagurugula Naga Kotesh"
+license: "MIT"
+
+tasks:
+  - id: easy
+    name: "Single-Node Supply Chain"
+    description: >
+      Manage a single warehouse with one reliable supplier. Learn basic
+      ordering logic to prevent stockouts while minimizing inventory cost.
+    difficulty: easy
+    max_steps: 30
+    score_range: [0.0, 1.0]
+    passing_score: 0.4
+
+  - id: medium
+    name: "Multi-Node Network"
+    description: >
+      Manage 3 warehouses with 2 suppliers of varying reliability.
+      Handle random supplier disruptions and reroute inventory between nodes.
+    difficulty: medium
+    max_steps: 50
+    score_range: [0.0, 1.0]
+    passing_score: 0.4
+
+  - id: hard
+    name: "Cascading Disruptions"
+    description: >
+      Manage 5 warehouses with 4 suppliers under frequent disruptions,
+      demand spikes, and cascading failures. Maximize service level while
+      minimizing total supply chain cost.
+    difficulty: hard
+    max_steps: 80
+    score_range: [0.0, 1.0]
+    passing_score: 0.4
+
+interface:
+  reset:
+    description: "Reset the environment and return initial observation"
+    returns: "dict"
+  step:
+    description: "Take an action and return (obs, reward, done, info)"
+    input:
+      type: "dict"
+      schema:
+        type: "string (order|expedite|reroute|wait)"
+        supplier_id: "string (optional)"
+        quantity: "int (optional)"
+        from_node: "string (optional)"
+        to_node: "string (optional)"
+        transfer_qty: "int (optional)"
+    returns: "tuple[dict, float, bool, dict]"
+  state:
+    description: "Return current state without stepping"
+    returns: "dict"
+
+deployment:
+  platform: "huggingface_spaces"
+  framework: "docker"
+  python_version: "3.11"
+  port: 7860
+  health_check: "/health"
+  endpoints:
+    - path: "/reset"
+      method: "POST"
+    - path: "/step"
+      method: "POST"
+    - path: "/state"
+      method: "GET"
+
+evaluation:
+  grader: "agent_grader"
+  metrics:
+    - name: "service_level"
+      description: "Fraction of demand fulfilled without stockout"
+      weight: 0.4
+    - name: "cost_efficiency"
+      description: "Inverse of total cost normalized to baseline"
+      weight: 0.3
+    - name: "resilience"
+      description: "Performance maintained during disruption events"
+      weight: 0.3
