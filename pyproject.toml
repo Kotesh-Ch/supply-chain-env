@@ -1,16 +1,13 @@
 [project]
 name = "supply-chain-env"
-version = "0.1.0"
-description = "Supply Chain Disruption Manager OpenEnv environment"
-authors = [
-    { name="Kotesh", email="koteshch212@gmail.com" }
-]
+version = "1.0.0"
+description = "Supply Chain Disruption Manager"
 dependencies = [
     "fastapi",
     "uvicorn",
     "pydantic",
-    "requests",
-    "openai"
+    "openenv-core>=0.2.0"
 ]
 
-requires-python = ">=3.10"
+[project.scripts]
+server = "server:app"
