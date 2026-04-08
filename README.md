@@ -17,6 +17,8 @@ colorTo: green
 sdk: docker
 app_port: 7860
 ---
+[🚀 Open Live App]:
+https://kotesh-ch-supply-chain-env.hf.space
 
 # 🏭 Supply Chain Disruption Manager
 
