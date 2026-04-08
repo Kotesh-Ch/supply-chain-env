@@ -9,10 +9,18 @@ license: mit
 ---
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
-=======
+
+title: Supply Chain Disruption Manager
+emoji: 🏭
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+---
+
 # 🏭 Supply Chain Disruption Manager
 
-> **OpenEnv Round 1 Submission** — Meta × Scaler OpenEnv Hackathon
+**OpenEnv Round 1 Submission** — Meta × Scaler OpenEnv Hackathon
 
 An RL environment where an AI agent manages a multi-node supply chain network, handling real-world complexities like supplier disruptions, inventory imbalances, demand spikes, and cost trade-offs.
 
@@ -75,6 +83,16 @@ Modern supply chains are brittle. A single supplier failure can cascade into sto
   "total_delivered": 120
 }
 ```
+
+## 📈 Baseline Performance
+
+| Difficulty | Score |
+|----------|------|
+| Easy     | 0.74 |
+| Medium   | 0.70 |
+| Hard     | 0.48 |
+
+Average Score: **0.64**
 
 ---
 

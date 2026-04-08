@@ -5,17 +5,23 @@ Run with: uv run server  OR  uvicorn server:app --host 0.0.0.0 --port 7860
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import Optional, Any
 import uvicorn
 
 from environment import SupplyChainEnv
 
+
 app = FastAPI(
     title="Supply Chain Disruption Manager",
     description="OpenEnv-compliant RL environment for supply chain management",
     version="1.0.0",
 )
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="/docs")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,13 +30,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── In-memory session store ──────────────────────────────────────────────────
+
 _sessions: dict[str, SupplyChainEnv] = {}
 _default_session = "default"
 _sessions[_default_session] = SupplyChainEnv(difficulty="easy")
 
 
-# ── Request schemas ──────────────────────────────────────────────────────────
+
 
 class ResetRequest(BaseModel):
     difficulty: Optional[str] = "easy"
@@ -45,7 +51,7 @@ class SessionRequest(BaseModel):
     session_id: Optional[str] = _default_session
 
 
-# ── Endpoints ────────────────────────────────────────────────────────────────
+
 
 @app.get("/health")
 def health():
@@ -117,5 +123,5 @@ def list_tasks():
     }
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":       
     uvicorn.run("server:app", host="0.0.0.0", port=7860, reload=False)
