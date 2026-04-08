@@ -24,7 +24,7 @@ app_port: 7860
 
 An RL environment where an AI agent manages a multi-node supply chain network, handling real-world complexities like supplier disruptions, inventory imbalances, demand spikes, and cost trade-offs.
 
-[🚀 Open Live App]:
+[Open Live App]:
 https://kotesh-ch-supply-chain-env.hf.space
 
 ---
