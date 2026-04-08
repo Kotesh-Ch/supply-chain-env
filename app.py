@@ -1,9 +1,4 @@
-import gradio as gr
+from server import app
 
-def demo(x):
-    return "Output: " + x
-
-iface = gr.Interface(fn=demo, inputs="text", outputs="text")
-
-if __name__ == "__main__":
-    iface.launch(server_name="0.0.0.0", server_port=7860)
+def main():
+    return app
