@@ -3,6 +3,8 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
+COPY requirements-lite.txt
+requirements.txt
 # Install uv for fast dependency resolution
 RUN pip install --no-cache-dir uv
 
