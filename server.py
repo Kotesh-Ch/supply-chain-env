@@ -36,8 +36,6 @@ _default_session = "default"
 _sessions[_default_session] = SupplyChainEnv(difficulty="easy")
 
 
-
-
 class ResetRequest(BaseModel):
     difficulty: Optional[str] = "easy"
     seed: Optional[int] = None
@@ -51,22 +49,30 @@ class SessionRequest(BaseModel):
     session_id: Optional[str] = _default_session
 
 
-
-
 @app.get("/health")
 def health():
     return {"status": "ok", "env": "supply-chain-disruption-manager", "version": "1.0.0"}
 
 
+# ✅ FIXED RESET ENDPOINT
 @app.post("/reset")
-def reset(req: ResetRequest):
+def reset(req: Optional[ResetRequest] = None):
     """Reset environment and return initial observation."""
+
+    # 👉 Handle empty body (OpenEnv case)
+    if req is None:
+        req = ResetRequest()
+
     difficulty = req.difficulty or "easy"
+
     if difficulty not in SupplyChainEnv.DIFFICULTIES:
         raise HTTPException(400, f"difficulty must be one of {SupplyChainEnv.DIFFICULTIES}")
+
     env = SupplyChainEnv(difficulty=difficulty, seed=req.seed)
     _sessions[req.session_id] = env
+
     obs = env.reset()
+
     return {"observation": obs, "session_id": req.session_id}
 
 
