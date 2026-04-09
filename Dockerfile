@@ -1,50 +1,31 @@
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM python:3.11-slim AS builder
-
-WORKDIR /app
-
-COPY requirements-lite.txt requirements.txt
-# Install uv for fast dependency resolution
-RUN pip install --no-cache-dir uv
-
-# Copy dependency files
-COPY requirements.txt .
-
-# Install dependencies into a virtual env
-RUN uv venv /app/.venv && \
-    uv pip install --python /app/.venv/bin/python \
-       --no-cache -r requirements.txt
-
-
-# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy virtual env from builder
-COPY --from=builder /app/.venv /app/.venv
+RUN pip install --no-cache-dir \
+    fastapi==0.115.0 \
+    "uvicorn[standard]==0.30.6" \
+    pydantic==2.9.2 \
+    openai==1.51.0 \
+    requests==2.32.3 \
+    pyyaml==6.0.2
 
-# Copy application code
-COPY environment.py  .
-COPY server.py       .
-COPY graders.py      .
-COPY inference.py    .
-COPY openenv.yaml    .
+COPY models.py         .
+COPY inference.py      .
+COPY openenv.yaml      .
+COPY server/           server/
+COPY baseline/         baseline/
 
-# HuggingFace Spaces runs as non-root user
 RUN useradd -m -u 1000 hfuser && chown -R hfuser /app
 USER hfuser
 
-ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
 
-# HF Spaces expects port 7860
 EXPOSE 7860
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')"
 
-# Start server
-CMD ["python", "server.py"]
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]
