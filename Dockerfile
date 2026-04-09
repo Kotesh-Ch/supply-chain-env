@@ -14,7 +14,6 @@ COPY models.py         .
 COPY inference.py      .
 COPY openenv.yaml      .
 COPY server/           server/
-COPY baseline/         baseline/
 
 RUN useradd -m -u 1000 hfuser && chown -R hfuser /app
 USER hfuser
