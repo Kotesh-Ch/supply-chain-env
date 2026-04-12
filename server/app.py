@@ -1,9 +1,8 @@
 """
-server/app.py — FastAPI server following OpenEnv spec.
-Exposes /reset, /step, /state, /health endpoints on port 7860.
+server/app.py â€” FastAPI server following OpenEnv spec.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Any
@@ -11,12 +10,10 @@ import uvicorn
 import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from server.environment import SupplyChainEnvironment
 
 app = FastAPI(
     title="Supply Chain Disruption Manager",
-    description="OpenEnv-compliant RL environment for supply chain management",
     version="1.0.0",
 )
 
@@ -27,28 +24,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Session store ─────────────────────────────────────────────────────────────
+# â”€â”€ Session store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _envs: dict[str, SupplyChainEnvironment] = {}
 
-def _get_env(session_id: str) -> SupplyChainEnvironment:
+def _get_env(session_id: str = "default") -> SupplyChainEnvironment:
     if session_id not in _envs:
         _envs[session_id] = SupplyChainEnvironment()
     return _envs[session_id]
 
 
-# ── Request / Response schemas ────────────────────────────────────────────────
-
-class ResetRequest(BaseModel):
-    difficulty: Optional[str] = "easy"
-    seed: Optional[int] = None
-    session_id: Optional[str] = "default"
-
-class StepRequest(BaseModel):
-    action: dict[str, Any]
-    session_id: Optional[str] = "default"
-
-
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# â”€â”€ Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/health")
 def health():
@@ -59,21 +44,47 @@ def health():
     }
 
 @app.post("/reset")
-def reset(req: ResetRequest):
-    env = _get_env(req.session_id)
-    obs = env.reset(difficulty=req.difficulty or "easy", seed=req.seed)
-    return {"observation": obs, "session_id": req.session_id}
+async def reset(request: Request):
+    """Reset endpoint â€” accepts empty body OR JSON body."""
+    # Parse body safely â€” empty body is fine
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    if body is None:
+        body = {}
+
+    difficulty = body.get("difficulty", "easy") or "easy"
+    seed       = body.get("seed", None)
+    session_id = body.get("session_id", "default") or "default"
+
+    env = _get_env(session_id)
+    obs = env.reset(difficulty=difficulty, seed=seed)
+    return {"observation": obs, "session_id": session_id}
 
 @app.post("/step")
-def step(req: StepRequest):
-    env = _get_env(req.session_id)
-    obs, reward, done, info = env.step(req.action)
+async def step(request: Request):
+    """Step endpoint â€” accepts action dict."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    if body is None:
+        body = {}
+
+    action     = body.get("action", {"action_type": "wait"}) or {"action_type": "wait"}
+    session_id = body.get("session_id", "default") or "default"
+
+    env = _get_env(session_id)
+    obs, reward, done, info = env.step(action)
     return {
         "observation": obs,
         "reward":      reward,
         "done":        done,
         "info":        info,
-        "session_id":  req.session_id,
+        "session_id":  session_id,
     }
 
 @app.get("/state")
@@ -96,7 +107,6 @@ def root():
         "version": "1.0.0",
         "endpoints": ["/health", "/reset", "/step", "/state", "/tasks", "/docs"],
     }
-
 
 if __name__ == "__main__":
     uvicorn.run("server.app:app", host="0.0.0.0", port=7860, reload=False)
