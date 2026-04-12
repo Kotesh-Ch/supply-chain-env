@@ -7,10 +7,11 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# â”€â”€ Env vars injected by validator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-API_BASE_URL = os.environ.get("API_BASE_URL", "").strip()
-API_KEY      = os.environ.get("API_KEY", os.environ.get("HF_TOKEN", "placeholder")).strip()
-MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini").strip()
+# â”€â”€ Environment variables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+API_BASE_URL  = os.environ.get("API_BASE_URL", "")
+API_KEY       = os.environ.get("API_KEY", os.environ.get("HF_TOKEN", "placeholder"))
+MODEL_NAME    = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+GAME_URL      = os.environ.get("GAME_URL", "http://localhost:7860")
 
 TASKS = [
     ("easy",   "single_node_supply_chain"),
@@ -18,36 +19,55 @@ TASKS = [
     ("hard",   "cascading_disruptions"),
 ]
 
-# â”€â”€ LLM client â€” MUST use validator's proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ LLM client (LiteLLM proxy) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+_llm_client    = None
+_llm_available = False
+
 try:
     from openai import OpenAI
-except ImportError:
-    OpenAI = None
 
-if not API_BASE_URL:
-    print("[WARN] API_BASE_URL not set â€” LLM calls may fail", flush=True)
-
-# Always initialise with whatever base_url is provided
-if OpenAI is not None:
-    _llm_client = OpenAI(
-        base_url=API_BASE_URL if API_BASE_URL else None,
-        api_key=API_KEY,
+    # Collect API base URL from all possible env var names
+    llm_base = (
+        os.environ.get("API_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or os.environ.get("LITELLM_PROXY_URL")
+        or os.environ.get("PROXY_URL")
+        or ""
     )
-else:
-    _llm_client = None
 
-print(f"[INFO] model={MODEL_NAME} | api_base={API_BASE_URL or 'default'}", flush=True)
+    # Collect API key from all possible env var names
+    llm_key = (
+        os.environ.get("API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("HF_TOKEN")
+        or "placeholder"
+    )
 
-# â”€â”€ Real environment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if not llm_base:
+        # âš ï¸ CRITICAL: Raise loudly so Phase 2 fails clearly if proxy URL is missing
+        raise ValueError(
+            "API_BASE_URL is not set. Cannot connect to LiteLLM proxy. "
+            "Ensure the validator injects API_BASE_URL into the environment."
+        )
+
+    _llm_client = OpenAI(base_url=llm_base, api_key=llm_key)
+    _llm_available = True
+    print(f"[INFO] LLM client initialized | base_url={llm_base}", flush=True)
+
+except Exception as e:
+    print(f"[WARN] Could not init LLM client: {e}", flush=True)
+
+# â”€â”€ Real game environment (optional) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _env_available = False
 try:
     from server.environment import SupplyChainEnvironment
     _env_available = True
-    print("[INFO] Using real SupplyChainEnvironment", flush=True)
-except Exception as e:
-    print(f"[WARN] Fallback env: {e}", flush=True)
+except Exception as _import_err:
+    print(f"[WARN] server.environment not found: {_import_err}", flush=True)
+
 
 # â”€â”€ Fallback simulation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 DIFFICULTY_CONFIG = {
     "easy":   {"n_nodes": 1, "n_suppliers": 2, "max_steps": 30,  "capacity": 200},
     "medium": {"n_nodes": 3, "n_suppliers": 3, "max_steps": 50,  "capacity": 150},
@@ -88,6 +108,7 @@ class FallbackEnvironment:
                 self.total_stockouts += max(0, d - n["inventory"])
                 reward -= 5.0
                 n["inventory"] = 0
+
         atype = action.get("action_type", "wait")
         if atype in ("order", "expedite"):
             qty  = action.get("quantity", 20)
@@ -98,12 +119,13 @@ class FallbackEnvironment:
                 n["inventory"] = min(n["capacity"], n["inventory"] + qty // len(self.nodes))
         elif atype == "reroute":
             src = next((n for n in self.nodes if n["id"] == action.get("from_node")), None)
-            dst = next((n for n in self.nodes if n["id"] == action.get("to_node")), None)
+            dst = next((n for n in self.nodes if n["id"] == action.get("to_node")),   None)
             qty = action.get("transfer_qty", 15)
             if src and dst and src["inventory"] >= qty:
                 src["inventory"] -= qty
                 dst["inventory"]  = min(dst["capacity"], dst["inventory"] + qty)
                 reward += 0.5
+
         return self._obs(), reward, self.step_count >= self.cfg["max_steps"], {}
 
     def _obs(self):
@@ -115,108 +137,129 @@ class FallbackEnvironment:
             "max_steps": self.cfg["max_steps"],
         }
 
-# â”€â”€ LLM system prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-SYSTEM_PROMPT = """You are a supply chain manager AI. Respond with ONLY a valid JSON action object â€” no explanation, no markdown.
 
-Valid actions:
-- {"action_type": "wait"}
-- {"action_type": "order", "supplier_id": "<id>", "quantity": <int 1-60>}
-- {"action_type": "expedite", "supplier_id": "<id>", "quantity": <int 1-50>}
-- {"action_type": "reroute", "from_node": "<id>", "to_node": "<id>", "transfer_qty": <int 1-30>}
+# â”€â”€ Greedy fallback policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-Rules:
-- expedite when any node inventory < demand_per_step * 2
-- reroute when richest node has 4x inventory of poorest
-- order when inventory < demand_per_step * 5 and < 50% capacity
-- wait otherwise
-- Use cheapest active supplier for order/expedite."""
-
-def greedy_action(obs):
-    """Pure greedy â€” used as JSON template when LLM output is invalid."""
+def greedy_policy(obs):
     nodes     = obs.get("nodes", [])
     suppliers = obs.get("suppliers", [])
     active    = sorted([s for s in suppliers if s.get("active", False)],
-                       key=lambda s: s.get("cost_per_unit", 999))
+                       key=lambda s: s.get("cost_per_unit", float("inf")))
     if not active:
         return {"action_type": "wait"}
+
     critical = [n for n in nodes if n.get("inventory", 0) < n.get("demand_per_step", 0) * 2]
     if critical:
+        qty = sum(n.get("demand_per_step", 0) * 4 for n in critical)
         return {"action_type": "expedite", "supplier_id": active[0]["id"],
-                "quantity": min(50, max(15, sum(n.get("demand_per_step", 0) * 4 for n in critical)))}
+                "quantity": min(50, max(15, qty))}
+
     by_inv = sorted(nodes, key=lambda n: n.get("inventory", 0))
     if len(by_inv) >= 2:
         poor, rich = by_inv[0], by_inv[-1]
         if rich.get("inventory", 0) > poor.get("inventory", 0) * 4 and rich.get("inventory", 0) > 30:
             return {"action_type": "reroute", "from_node": rich["id"],
                     "to_node": poor["id"], "transfer_qty": 15}
+
     low = [n for n in nodes if n.get("inventory", 0) < n.get("demand_per_step", 0) * 5
            and n.get("inventory", 0) < n.get("capacity", 0) * 0.5]
     if low:
+        qty = sum(n.get("demand_per_step", 0) * 6 for n in low)
         return {"action_type": "order", "supplier_id": active[0]["id"],
-                "quantity": min(60, max(20, sum(n.get("demand_per_step", 0) * 6 for n in low)))}
+                "quantity": min(60, max(20, qty))}
+
     return {"action_type": "wait"}
 
+
+# â”€â”€ LLM policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+SYSTEM_PROMPT = """You are a supply chain manager AI. Respond with ONLY a valid JSON action object.
+
+Valid actions:
+- {"action_type": "wait"}
+- {"action_type": "order", "supplier_id": "<id>", "quantity": <int>}
+- {"action_type": "expedite", "supplier_id": "<id>", "quantity": <int>}
+- {"action_type": "reroute", "from_node": "<id>", "to_node": "<id>", "transfer_qty": <int>}
+
+Decision rules:
+- expedite: any node inventory < demand_per_step * 2
+- reroute: one node has 4x inventory of another
+- order: inventory < demand_per_step * 5 AND < 50% capacity
+- wait: otherwise
+- Always use the cheapest active supplier for order/expedite."""
+
+
 def llm_policy(obs):
-    """
-    Call LLM through the validator's LiteLLM proxy.
-    Falls back to greedy only on total failure.
-    """
-    user_msg = (
-        f"Current supply chain state:\n"
-        f"Nodes: {json.dumps(obs.get('nodes', []))}\n"
-        f"Suppliers: {json.dumps(obs.get('suppliers', []))}\n"
-        f"Delivered={obs.get('total_delivered',0)} "
-        f"Stockouts={obs.get('total_stockouts',0)} "
-        f"Cost={obs.get('total_cost',0)}\n"
-        f"Respond with ONLY a JSON action."
-    )
-    try:
-        response = _llm_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_msg},
-            ],
-            max_tokens=100,
-            temperature=0.0,
+    """Call LLM via the validator's LiteLLM proxy. No silent fallback."""
+    if not _llm_available or _llm_client is None:
+        # âš ï¸ Do NOT silently fall back â€” raise so the validator sees the failure
+        raise RuntimeError(
+            "LLM client is not available. API_BASE_URL or API_KEY may not be set correctly."
         )
-        raw = response.choices[0].message.content.strip()
-        # Strip markdown fences if present
-        if "```" in raw:
-            parts = raw.split("```")
-            raw = parts[1] if len(parts) > 1 else parts[0]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        raw = raw.strip()
-        action = json.loads(raw)
-        if "action_type" not in action:
-            raise ValueError("Missing action_type")
-        return action
-    except Exception as e:
-        print(f"[WARN] LLM call failed: {e} â€” using greedy fallback", flush=True)
-        return greedy_action(obs)
+
+    user_msg = (
+        f"Nodes:\n{json.dumps(obs.get('nodes', []), indent=2)}\n\n"
+        f"Suppliers:\n{json.dumps(obs.get('suppliers', []), indent=2)}\n\n"
+        f"Delivered: {obs.get('total_delivered', 0)} | "
+        f"Stockouts: {obs.get('total_stockouts', 0)} | "
+        f"Cost: {obs.get('total_cost', 0)}\n\n"
+        f"Respond with ONLY a JSON action object."
+    )
+
+    response = _llm_client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": user_msg},
+        ],
+        max_tokens=150,
+        temperature=0.0,
+    )
+    raw = response.choices[0].message.content.strip()
+
+    # Strip markdown fences if present
+    if "```" in raw:
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
+
+    action = json.loads(raw)
+    if "action_type" not in action:
+        raise ValueError(f"No action_type in response: {action}")
+    return action
+
 
 # â”€â”€ Scoring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 def compute_score(obs, total_reward):
     delivered  = obs.get("total_delivered", 0)
     stockouts  = obs.get("total_stockouts", 0)
     total      = delivered + stockouts
     n_nodes    = max(len(obs.get("nodes", [])), 1)
     max_steps  = obs.get("max_steps", 1)
+    total_cost = obs.get("total_cost", 0)
+
     svc        = delivered / total if total > 0 else 0.0
     exp_cost   = max_steps * n_nodes * 60.0 * (1 + n_nodes * 0.1)
-    cost_score = math.exp(-obs.get("total_cost", 0) / (exp_cost + 1e-9) * 0.5)
+    cost_score = math.exp(-total_cost / (exp_cost + 1e-9) * 0.5)
     floor      = -(max_steps * n_nodes * 15.0)
     ceiling    =   max_steps * n_nodes * 1.5
     rew_score  = (total_reward - floor) / (ceiling - floor + 1e-9)
+
     return round(
         0.4 * max(0.0, min(1.0, svc)) +
         0.3 * max(0.0, min(1.0, cost_score)) +
         0.3 * max(0.0, min(1.0, rew_score)), 4)
 
+
 # â”€â”€ Run one task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 def run_task(difficulty, task_name):
     env = SupplyChainEnvironment() if _env_available else FallbackEnvironment()
+    if not _env_available:
+        print(f"[WARN] Using fallback simulation for {task_name}", flush=True)
+
     obs          = env.reset(difficulty=difficulty, seed=42)
     total_reward = 0.0
     step_num     = 0
@@ -225,7 +268,7 @@ def run_task(difficulty, task_name):
     print(f"[START] task={task_name}", flush=True)
 
     while not done and step_num < 1000:
-        action       = llm_policy(obs)          # â† always calls LLM proxy
+        action = llm_policy(obs)
         obs, reward, done, _ = env.step(action)
         total_reward += reward
         step_num     += 1
@@ -233,6 +276,7 @@ def run_task(difficulty, task_name):
 
     score = compute_score(obs, total_reward)
     print(f"[END] task={task_name} score={score} steps={step_num}", flush=True)
+
     return {
         "task": task_name, "difficulty": difficulty, "score": score,
         "steps": step_num, "total_reward": round(total_reward, 4),
@@ -241,14 +285,25 @@ def run_task(difficulty, task_name):
         "total_cost": obs.get("total_cost", 0),
     }
 
+
 # â”€â”€ Main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 def main():
-    # Log all relevant env vars for debugging
+    print(
+        f"[INFO] model={MODEL_NAME} | "
+        f"env_available={_env_available} | "
+        f"llm_available={_llm_available} | "
+        f"api_base={os.environ.get('API_BASE_URL', 'not set')}",
+        flush=True
+    )
+
+    # Print ALL env vars that look relevant (helps debug on next submission)
     for k, v in os.environ.items():
         if any(x in k.upper() for x in ["API", "KEY", "URL", "TOKEN", "MODEL", "PROXY"]):
-            print(f"[ENV] {k}={v[:80]}", flush=True)
+            print(f"[ENV] {k}={v[:60] if len(v) > 60 else v}", flush=True)
 
     results = []
+
     for difficulty, task_name in TASKS:
         try:
             result = run_task(difficulty, task_name)
@@ -261,13 +316,17 @@ def main():
             results.append({"task": task_name, "difficulty": difficulty,
                              "score": 0.0, "error": str(e)})
             continue
+
         results.append(result)
 
     print("[INFO] === FINAL RESULTS ===", flush=True)
     print(json.dumps(results, indent=2), flush=True)
+
     avg = sum(r["score"] for r in results) / len(results) if results else 0.0
     print(f"[INFO] average_score={round(avg, 4)}", flush=True)
+
     sys.exit(0)
+
 
 if __name__ == "__main__":
     try:
