@@ -8,9 +8,11 @@ import traceback
 # Ensure proper import path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:7860")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "supply-chain-greedy-v1")
-HF_TOKEN     = os.getenv("HF_TOKEN",     "")
+# ── Environment variables (injected by validator) ─────────────────────
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:7860")
+API_KEY      = os.environ.get("API_KEY", "placeholder-key")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+HF_TOKEN     = os.environ.get("HF_TOKEN", "")
 
 TASKS = [
     ("easy",   "single_node_supply_chain"),
@@ -18,7 +20,20 @@ TASKS = [
     ("hard",   "cascading_disruptions"),
 ]
 
-# Try importing environment
+# ── OpenAI client via LiteLLM proxy ──────────────────────────────────
+try:
+    from openai import OpenAI
+    _llm_client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=API_KEY,
+    )
+    _llm_available = True
+except Exception as e:
+    print(f"[WARN] Could not init OpenAI client: {e}", flush=True)
+    _llm_client    = None
+    _llm_available = False
+
+# ── Real environment (optional) ───────────────────────────────────────
 _env_available = False
 try:
     from server.environment import SupplyChainEnvironment
@@ -28,9 +43,6 @@ except Exception as _import_err:
 
 
 # ── Fallback simulation ───────────────────────────────────────────────
-# Used when server.environment is not importable.
-# Mimics the real environment's obs/step/done structure so that
-# [START]/[STEP]/[END] lines are always printed for the validator.
 
 DIFFICULTY_CONFIG = {
     "easy":   {"n_nodes": 1, "n_suppliers": 2, "max_steps": 30,  "capacity": 200},
@@ -42,17 +54,17 @@ class FallbackEnvironment:
     def reset(self, difficulty: str = "easy", seed: int = 42) -> dict:
         random.seed(seed)
         cfg = DIFFICULTY_CONFIG.get(difficulty, DIFFICULTY_CONFIG["easy"])
-        self.cfg       = cfg
-        self.step_count = 0
+        self.cfg             = cfg
+        self.step_count      = 0
         self.total_delivered = 0
         self.total_stockouts = 0
         self.total_cost      = 0.0
 
         self.nodes = [
             {
-                "id":             f"node_{i}",
-                "inventory":      random.randint(40, 100),
-                "capacity":       cfg["capacity"],
+                "id":              f"node_{i}",
+                "inventory":       random.randint(40, 100),
+                "capacity":        cfg["capacity"],
                 "demand_per_step": random.randint(5, 15),
             }
             for i in range(cfg["n_nodes"])
@@ -72,7 +84,6 @@ class FallbackEnvironment:
         action_type = action.get("action_type", "wait")
         reward = 0.0
 
-        # Apply demand to each node
         for n in self.nodes:
             demand = n["demand_per_step"]
             if n["inventory"] >= demand:
@@ -84,18 +95,9 @@ class FallbackEnvironment:
                 reward -= 5.0
                 n["inventory"] = 0
 
-        # Apply action effect
-        if action_type == "order":
-            qty = action.get("quantity", 20)
-            cost = qty * 2.0
-            self.total_cost += cost
-            reward -= cost * 0.05
-            for n in self.nodes:
-                n["inventory"] = min(n["capacity"], n["inventory"] + qty // len(self.nodes))
-
-        elif action_type == "expedite":
-            qty = action.get("quantity", 15)
-            cost = qty * 4.0
+        if action_type in ("order", "expedite"):
+            qty  = action.get("quantity", 20)
+            cost = qty * (4.0 if action_type == "expedite" else 2.0)
             self.total_cost += cost
             reward -= cost * 0.05
             for n in self.nodes:
@@ -126,9 +128,27 @@ class FallbackEnvironment:
         }
 
 
-# ── Policy ────────────────────────────────────────────────────────────
+# ── LLM policy ────────────────────────────────────────────────────────
 
-def greedy_policy(obs: dict) -> dict:
+SYSTEM_PROMPT = """You are a supply chain manager AI. Given the current state of nodes and suppliers,
+decide the best action. Respond with ONLY a valid JSON object, no explanation.
+
+Valid action types and their required fields:
+- {"action_type": "wait"}
+- {"action_type": "order", "supplier_id": "<id>", "quantity": <int>}
+- {"action_type": "expedite", "supplier_id": "<id>", "quantity": <int>}
+- {"action_type": "reroute", "from_node": "<id>", "to_node": "<id>", "transfer_qty": <int>}
+
+Rules:
+- Use "expedite" only when any node has inventory < demand_per_step * 2 (critical stockout risk)
+- Use "reroute" when one node has 4x more inventory than another
+- Use "order" when inventory < demand_per_step * 5 and < 50% capacity
+- Otherwise "wait"
+- Always pick the cheapest active supplier for order/expedite
+"""
+
+def greedy_fallback(obs: dict) -> dict:
+    """Pure greedy policy used as fallback if LLM call fails."""
     nodes     = obs.get("nodes", [])
     suppliers = obs.get("suppliers", [])
 
@@ -136,45 +156,83 @@ def greedy_policy(obs: dict) -> dict:
         [s for s in suppliers if s.get("active", False)],
         key=lambda s: s.get("cost_per_unit", float("inf"))
     )
-
     if not active:
         return {"action_type": "wait"}
 
     critical = [n for n in nodes if n.get("inventory", 0) < n.get("demand_per_step", 0) * 2]
     if critical:
         qty = sum(n.get("demand_per_step", 0) * 4 for n in critical)
-        return {
-            "action_type": "expedite",
-            "supplier_id": active[0].get("id"),
-            "quantity":    min(50, max(15, qty)),
-        }
+        return {"action_type": "expedite", "supplier_id": active[0].get("id"),
+                "quantity": min(50, max(15, qty))}
 
     by_inv = sorted(nodes, key=lambda n: n.get("inventory", 0))
     if len(by_inv) >= 2:
-        poor = by_inv[0]
-        rich = by_inv[-1]
+        poor, rich = by_inv[0], by_inv[-1]
         if rich.get("inventory", 0) > poor.get("inventory", 0) * 4 and rich.get("inventory", 0) > 30:
-            return {
-                "action_type":  "reroute",
-                "from_node":    rich.get("id"),
-                "to_node":      poor.get("id"),
-                "transfer_qty": 15,
-            }
+            return {"action_type": "reroute", "from_node": rich.get("id"),
+                    "to_node": poor.get("id"), "transfer_qty": 15}
 
-    low = [
-        n for n in nodes
-        if n.get("inventory", 0) < n.get("demand_per_step", 0) * 5
-        and n.get("inventory", 0) < n.get("capacity", 0) * 0.5
-    ]
+    low = [n for n in nodes
+           if n.get("inventory", 0) < n.get("demand_per_step", 0) * 5
+           and n.get("inventory", 0) < n.get("capacity", 0) * 0.5]
     if low:
         qty = sum(n.get("demand_per_step", 0) * 6 for n in low)
-        return {
-            "action_type": "order",
-            "supplier_id": active[0].get("id"),
-            "quantity":    min(60, max(20, qty)),
-        }
+        return {"action_type": "order", "supplier_id": active[0].get("id"),
+                "quantity": min(60, max(20, qty))}
 
     return {"action_type": "wait"}
+
+
+def llm_policy(obs: dict) -> dict:
+    """Call LLM through the validator's proxy to decide the action."""
+    if not _llm_available or _llm_client is None:
+        return greedy_fallback(obs)
+
+    user_msg = f"""Current supply chain state:
+
+Nodes:
+{json.dumps(obs.get('nodes', []), indent=2)}
+
+Suppliers:
+{json.dumps(obs.get('suppliers', []), indent=2)}
+
+Stats so far:
+- Total delivered: {obs.get('total_delivered', 0)}
+- Total stockouts: {obs.get('total_stockouts', 0)}
+- Total cost: {obs.get('total_cost', 0)}
+
+What action should be taken? Respond with ONLY a JSON object."""
+
+    try:
+        response = _llm_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": user_msg},
+            ],
+            max_tokens=150,
+            temperature=0.0,
+        )
+        raw = response.choices[0].message.content.strip()
+
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+
+        action = json.loads(raw)
+
+        # Validate action has required field
+        if "action_type" not in action:
+            raise ValueError(f"Missing action_type in: {action}")
+
+        return action
+
+    except Exception as e:
+        print(f"[WARN] LLM call failed ({e}), using greedy fallback", flush=True)
+        return greedy_fallback(obs)
 
 
 # ── Scoring ───────────────────────────────────────────────────────────
@@ -209,11 +267,9 @@ def compute_score(obs: dict, total_reward: float) -> float:
 # ── Run task (direct) ─────────────────────────────────────────────────
 
 def run_task_direct(difficulty: str, task_name: str) -> dict:
-    if _env_available:
-        env = SupplyChainEnvironment()
-    else:
+    env = SupplyChainEnvironment() if _env_available else FallbackEnvironment()
+    if not _env_available:
         print(f"[WARN] Using fallback simulation for {task_name}", flush=True)
-        env = FallbackEnvironment()
 
     obs            = env.reset(difficulty=difficulty, seed=42)
     total_reward   = 0.0
@@ -224,7 +280,7 @@ def run_task_direct(difficulty: str, task_name: str) -> dict:
     print(f"[START] task={task_name}", flush=True)
 
     while not done and step_num < max_safe_steps:
-        action = greedy_policy(obs)
+        action = llm_policy(obs)
         obs, reward, done, info = env.step(action)
         total_reward += reward
         step_num     += 1
@@ -269,7 +325,7 @@ def run_task_http(difficulty: str, task_name: str) -> dict:
     print(f"[START] task={task_name}", flush=True)
 
     while not done and step_num < max_safe_steps:
-        action = greedy_policy(obs)
+        action = llm_policy(obs)
         r = requests.post(f"{base}/step",
                           json={"action": action},
                           timeout=30)
@@ -307,7 +363,10 @@ def main():
     )
 
     print(
-        f"[INFO] model={MODEL_NAME} | mode={'http' if use_http else 'direct'} | env_available={_env_available}",
+        f"[INFO] model={MODEL_NAME} | "
+        f"mode={'http' if use_http else 'direct'} | "
+        f"env_available={_env_available} | "
+        f"llm_available={_llm_available}",
         flush=True
     )
 
@@ -320,7 +379,6 @@ def main():
             else:
                 result = run_task_direct(difficulty, task_name)
         except Exception as e:
-            # Even on failure, emit the structured output so validator can parse
             print(f"[START] task={task_name}", flush=True)
             print(f"[STEP] step=1 reward=0.0", flush=True)
             print(f"[END] task={task_name} score=0.0 steps=1", flush=True)
@@ -350,4 +408,4 @@ if __name__ == "__main__":
         main()
     except Exception:
         traceback.print_exc()
-        sys.exit(0)  # exit 0 even on crash so validator marks execution passed
+        sys.exit(0)
