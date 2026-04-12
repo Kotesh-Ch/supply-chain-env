@@ -27,5 +27,5 @@ EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')"
 
-# Start BOTH the game server AND inference.py
-CMD bash -c "uvicorn server.app:app --host 0.0.0.0 --port 7860 & sleep 5 && python inference.py"
+# Server only — validator separately runs inference.py
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]
