@@ -4,31 +4,17 @@ import json
 import math
 import random
 import traceback
-import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# â”€â”€ Official env vars per Scaler hackathon spec â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-API_BASE_URL = os.environ.get("API_BASE_URL", "").rstrip("/")
-HF_TOKEN     = os.environ.get("HF_TOKEN", "")
+# â”€â”€ Exactly as validator HOW TO FIX says â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+API_BASE_URL = os.environ["API_BASE_URL"]   # will raise KeyError if not injected
+API_KEY      = os.environ["API_KEY"]         # exactly this name per validator docs
 MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-GAME_URL     = os.environ.get("GAME_URL", "http://localhost:7860")
-
-# Normalise: OpenAI client needs /v1 suffix
-API_BASE_URL_V1 = API_BASE_URL
-if API_BASE_URL_V1 and not API_BASE_URL_V1.endswith("/v1"):
-    API_BASE_URL_V1 = API_BASE_URL_V1 + "/v1"
 
 print(f"[INFO] API_BASE_URL={API_BASE_URL!r}", flush=True)
-print(f"[INFO] API_BASE_URL_V1={API_BASE_URL_V1!r}", flush=True)
-print(f"[INFO] HF_TOKEN={'SET (' + str(len(HF_TOKEN)) + ' chars)' if HF_TOKEN else 'NOT SET'}", flush=True)
+print(f"[INFO] API_KEY=SET ({len(API_KEY)} chars)", flush=True)
 print(f"[INFO] MODEL_NAME={MODEL_NAME!r}", flush=True)
-print(f"[INFO] GAME_URL={GAME_URL!r}", flush=True)
-
-# Dump ALL env vars for debugging
-print("[ENV_DUMP] Full environment:", flush=True)
-for k, v in sorted(os.environ.items()):
-    print(f"[ENV_DUMP]   {k}={v[:80]}", flush=True)
 
 TASKS = [
     ("easy",   "single_node_supply_chain"),
@@ -36,71 +22,30 @@ TASKS = [
     ("hard",   "cascading_disruptions"),
 ]
 
-# â”€â”€ LLM client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-_llm_client    = None
-_llm_available = False
+# â”€â”€ LLM client â€” exactly as validator instructs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+from openai import OpenAI
 
-try:
-    from openai import OpenAI
+client = OpenAI(
+    base_url=os.environ["API_BASE_URL"],
+    api_key=os.environ["API_KEY"],
+)
 
-    if not API_BASE_URL_V1:
-        raise ValueError("API_BASE_URL not set â€” cannot reach LiteLLM proxy.")
-    if not HF_TOKEN:
-        raise ValueError("HF_TOKEN not set â€” no API key.")
+print("[INFO] Making warm-up LLM call...", flush=True)
+_w = client.chat.completions.create(
+    model=MODEL_NAME,
+    messages=[{"role": "user", "content": 'Reply only: {"action_type":"wait"}'}],
+    max_tokens=20,
+    temperature=0.0,
+)
+print(f"[INFO] Warm-up OK: {_w.choices[0].message.content.strip()}", flush=True)
 
-    _llm_client = OpenAI(base_url=API_BASE_URL_V1, api_key=HF_TOKEN)
-
-    # Warm-up to verify proxy and register an API call
-    print("[INFO] Sending warm-up call to LLM proxy...", flush=True)
-    _warmup = _llm_client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "user", "content": 'Reply with only: {"action_type":"wait"}'}],
-        max_tokens=30,
-        temperature=0.0,
-    )
-    print(f"[INFO] Warm-up OK: {_warmup.choices[0].message.content.strip()}", flush=True)
-    _llm_available = True
-
-except Exception as e:
-    print(f"[ERROR] LLM init failed: {e}", flush=True)
-    traceback.print_exc()
-
-# â”€â”€ Game client (uses GAME_URL to talk to the HF Space server) â”€â”€â”€â”€â”€â”€â”€â”€
-class GameClient:
-    def __init__(self, base_url=GAME_URL):
-        self.base_url = base_url.rstrip("/")
-
-    def reset(self, difficulty="easy", seed=42):
-        r = requests.post(
-            f"{self.base_url}/reset",
-            json={"difficulty": difficulty, "seed": seed},
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.json()
-
-    def step(self, action: dict):
-        r = requests.post(
-            f"{self.base_url}/step",
-            json={"action": action},
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.json()
-
-    def state(self):
-        r = requests.get(f"{self.base_url}/state", timeout=10)
-        r.raise_for_status()
-        return r.json()
-
-# â”€â”€ Real server environment wrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ Real environment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _env_available = False
 try:
     from server.environment import SupplyChainEnvironment
     _env_available = True
-    print("[INFO] Using real SupplyChainEnvironment", flush=True)
-except Exception as err:
-    print(f"[WARN] server.environment not found: {err}", flush=True)
+except Exception as e:
+    print(f"[WARN] server.environment not found: {e}", flush=True)
 
 # â”€â”€ Fallback simulation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 DIFFICULTY_CONFIG = {
@@ -143,7 +88,6 @@ class FallbackEnvironment:
                 self.total_stockouts += max(0, d - n["inventory"])
                 reward -= 5.0
                 n["inventory"] = 0
-
         atype = action.get("action_type", "wait")
         if atype in ("order", "expedite"):
             qty  = action.get("quantity", 20)
@@ -154,13 +98,12 @@ class FallbackEnvironment:
                 n["inventory"] = min(n["capacity"], n["inventory"] + qty // len(self.nodes))
         elif atype == "reroute":
             src = next((n for n in self.nodes if n["id"] == action.get("from_node")), None)
-            dst = next((n for n in self.nodes if n["id"] == action.get("to_node")),   None)
+            dst = next((n for n in self.nodes if n["id"] == action.get("to_node")), None)
             qty = action.get("transfer_qty", 15)
             if src and dst and src["inventory"] >= qty:
                 src["inventory"] -= qty
-                dst["inventory"]  = min(dst["capacity"], dst["inventory"] + qty)
+                dst["inventory"] = min(dst["capacity"], dst["inventory"] + qty)
                 reward += 0.5
-
         return self._obs(), reward, self.step_count >= self.cfg["max_steps"], {}
 
     def _obs(self):
@@ -172,12 +115,12 @@ class FallbackEnvironment:
             "max_steps": self.cfg["max_steps"],
         }
 
-# â”€â”€ Greedy fallback policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ Greedy fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def greedy_policy(obs):
-    nodes     = obs.get("nodes", [])
+    nodes    = obs.get("nodes", [])
     suppliers = obs.get("suppliers", [])
-    active    = sorted([s for s in suppliers if s.get("active", False)],
-                       key=lambda s: s.get("cost_per_unit", float("inf")))
+    active   = sorted([s for s in suppliers if s.get("active", False)],
+                      key=lambda s: s.get("cost_per_unit", float("inf")))
     if not active:
         return {"action_type": "wait"}
     critical = [n for n in nodes if n.get("inventory", 0) < n.get("demand_per_step", 0) * 2]
@@ -213,13 +156,9 @@ Decision rules:
 - reroute: one node has 4x inventory of another
 - order: inventory < demand_per_step * 5 AND < 50% capacity
 - wait: otherwise
-- Always use the cheapest active supplier for order/expedite."""
+- Always use cheapest active supplier."""
 
 def llm_policy(obs):
-    if not _llm_available or _llm_client is None:
-        print("[WARN] LLM unavailable â€” using greedy fallback", flush=True)
-        return greedy_policy(obs)
-
     user_msg = (
         f"Nodes:\n{json.dumps(obs.get('nodes', []), indent=2)}\n\n"
         f"Suppliers:\n{json.dumps(obs.get('suppliers', []), indent=2)}\n\n"
@@ -229,7 +168,7 @@ def llm_policy(obs):
         "Respond with ONLY a JSON action object."
     )
     try:
-        resp = _llm_client.chat.completions.create(
+        resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -243,13 +182,12 @@ def llm_policy(obs):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        raw = raw.strip()
-        action = json.loads(raw)
+        action = json.loads(raw.strip())
         if "action_type" not in action:
             raise ValueError(f"Missing action_type: {action}")
         return action
     except Exception as e:
-        print(f"[WARN] LLM call failed ({e}) â€” using greedy fallback", flush=True)
+        print(f"[WARN] LLM failed ({e}), greedy fallback", flush=True)
         return greedy_policy(obs)
 
 # â”€â”€ Scoring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -273,53 +211,18 @@ def compute_score(obs, total_reward):
 
 # â”€â”€ Run one task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def run_task(difficulty, task_name):
-    # Try real server first, then local env, then fallback sim
-    if _env_available:
-        env = SupplyChainEnvironment()
-        obs          = env.reset(difficulty=difficulty, seed=42)
-        total_reward = 0.0
-        step_num     = 0
-        done         = False
-        print(f"[START] task={task_name}", flush=True)
-        while not done and step_num < 1000:
-            action = llm_policy(obs)
-            obs, reward, done, _ = env.step(action)
-            total_reward += reward
-            step_num     += 1
-            print(f"[STEP] step={step_num} reward={round(reward, 4)}", flush=True)
-    else:
-        # Try GameClient (HF Space server) first
-        try:
-            client       = GameClient(base_url=GAME_URL)
-            obs          = client.reset(difficulty=difficulty, seed=42)
-            total_reward = 0.0
-            step_num     = 0
-            done         = False
-            print(f"[START] task={task_name}", flush=True)
-            while not done and step_num < 1000:
-                action   = llm_policy(obs)
-                result   = client.step(action)
-                obs      = result.get("observation", result)
-                reward   = result.get("reward", 0.0)
-                done     = result.get("done", False)
-                total_reward += reward
-                step_num     += 1
-                print(f"[STEP] step={step_num} reward={round(reward, 4)}", flush=True)
-        except Exception as client_err:
-            print(f"[WARN] GameClient failed ({client_err}), using FallbackEnvironment", flush=True)
-            env          = FallbackEnvironment()
-            obs          = env.reset(difficulty=difficulty, seed=42)
-            total_reward = 0.0
-            step_num     = 0
-            done         = False
-            print(f"[START] task={task_name}", flush=True)
-            while not done and step_num < 1000:
-                action = llm_policy(obs)
-                obs, reward, done, _ = env.step(action)
-                total_reward += reward
-                step_num     += 1
-                print(f"[STEP] step={step_num} reward={round(reward, 4)}", flush=True)
-
+    env = SupplyChainEnvironment() if _env_available else FallbackEnvironment()
+    obs          = env.reset(difficulty=difficulty, seed=42)
+    total_reward = 0.0
+    step_num     = 0
+    done         = False
+    print(f"[START] task={task_name}", flush=True)
+    while not done and step_num < 1000:
+        action = llm_policy(obs)
+        obs, reward, done, _ = env.step(action)
+        total_reward += reward
+        step_num     += 1
+        print(f"[STEP] step={step_num} reward={round(reward, 4)}", flush=True)
     score = compute_score(obs, total_reward)
     print(f"[END] task={task_name} score={score} steps={step_num}", flush=True)
     return {
@@ -346,7 +249,6 @@ def main():
                              "score": 0.0, "error": str(e)})
             continue
         results.append(result)
-
     print("[INFO] === FINAL RESULTS ===", flush=True)
     print(json.dumps(results, indent=2), flush=True)
     avg = sum(r["score"] for r in results) / len(results) if results else 0.0
